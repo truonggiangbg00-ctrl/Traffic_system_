@@ -81,3 +81,27 @@ class DetectionResult:
     class_ids: np.ndarray = field(default_factory=lambda: np.array([], dtype=np.int32))
     confidences: np.ndarray = field(default_factory=lambda: np.array([], dtype=np.float32))
     class_names: Dict[int, str] = field(default_factory=dict)
+
+@dataclass
+class TrackedVehicle:
+    """Single tracked vehicle in a frame"""
+    track_id: int  # Unique tracking ID
+    bbox: Tuple[int, int, int, int]  # [x1, y1, x2, y2]
+    cls_id: int  # Class ID from YOLO
+    cls_name: str  # Class name (e.g., 'car', 'motorbike', 'bus', 'truck')
+    conf: float  # Detection confidence score
+    
+    # Trạng thái vi phạm & cảnh báo
+    is_violating: bool = False
+    is_warning: bool = False        # [MỚI]: Cờ báo hiệu xe đang đi vào làn cấm nhưng chưa đủ n giây
+    violation_timer: float = 0.0    # [MỚI]: Số giây thực tế xe đã đi trong làn cấm
+    violation_lane: str = ""
+    violation_type: str = ""
+
+    @property
+    def bottom_center(self) -> Tuple[int, int]:
+        """Dynamically compute bottom-center point of bbox"""
+        return (
+            int((self.bbox[0] + self.bbox[2]) // 2),
+            int(self.bbox[3])
+        )

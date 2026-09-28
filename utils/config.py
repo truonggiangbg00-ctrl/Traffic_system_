@@ -20,6 +20,7 @@ else:
 WEIGHTS_DIR = PROJECT_ROOT / "weights"
 EVIDENCE_DIR = PROJECT_ROOT / "evidence"
 OUTPUT_DIR = PROJECT_ROOT / "output"
+ROI_CONFIG_FILE = OUTPUT_DIR / "roi_presets.json"
 
 EVIDENCE_DIR.mkdir(parents=True, exist_ok=True)
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
@@ -30,6 +31,7 @@ USE_OPTIMIZED_MODEL = True
 
 BASELINE_MODEL_PATH = str(WEIGHTS_DIR / "yolo_basic.pt")
 OPTIMIZED_MODEL_PATH = str(WEIGHTS_DIR / "yolo_optimized.pt")
+OPTIMIZED_MODEL_TYPE = "pt"
 
 DEVICE = "cuda"
 
@@ -57,6 +59,8 @@ CLASS_NAMES = {
 CONFIDENCE_THRESHOLD = 0.5
 IOU_THRESHOLD = 0.45
 MIN_DETECTION_FRAMES = 3
+VIOLATION_TIME_THRESHOLD = 3.0  # Phải đi trong làn cấm đủ n giây (VD: 3.0s) mới tính là vi phạm
+VIOLATION_GRACE_TIME = 0.5      # Dung sai 0.5s chống nhiễu khi Bbox bị giật hoặc mất dấu tạm thời
 
 # ============================================================================
 # 5. LANE CONFIGURATION (Dữ liệu dự phòng - Chỉ dùng nếu không vẽ ROI trong GUI)

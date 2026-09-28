@@ -44,6 +44,7 @@ class TrafficMonitoringSystem:
         self.frame_count = 0
         self.start_time = time.time()
         self.fps_history = []
+        self.use_clahe = False
         
         try:
             self._init_components()
@@ -83,6 +84,7 @@ class TrafficMonitoringSystem:
         self.video_fps = self.cap.get(cv2.CAP_PROP_FPS) or 30.0
         self.video_width = int(self.cap.get(cv2.CAP_PROP_FRAME_WIDTH))
         self.video_height = int(self.cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        self.analyzer.set_video_fps(self.video_fps)
         
         print("[5/5] Setup video writer...")
         self.video_writer = None
@@ -93,9 +95,11 @@ class TrafficMonitoringSystem:
             )
 
     def process_frame(self, frame: np.ndarray) -> FrameState:
+        self.frame_count += 1
         frame_state = FrameState(frame_id=self.frame_count, original_frame=frame.copy(), timestamp=time.time())
         
-        frame_state = self.detector.process(frame_state)       
+        # [CẬP NHẬT]: Truyền cờ self.use_clahe vào DetectorTracker
+        frame_state = self.detector.process(frame_state, use_preprocessing=self.use_clahe)       
         frame_state = self.analyzer.process(frame_state)       
         frame_state = self.counter.process(frame_state)        
         
@@ -108,8 +112,10 @@ class TrafficMonitoringSystem:
                 frame, viol.track_id, viol.bbox, viol.violation_type, frame_state.frame_id
             )
             
-        # Vẽ giao diện hiển thị bằng ROI động
-        frame_state.processed_frame = self.visualizer.draw(frame_state, self.current_polygons)
+        # [CẬP NHẬT]: Đồng bộ số giây time_threshold sang Visualizer để hiển thị đúng trên nhãn Cam
+        frame_state.processed_frame = self.visualizer.draw(
+            frame_state, self.current_polygons, time_threshold=self.analyzer.time_threshold
+        )
         frame_state.fps = self.fps_history[-1] if self.fps_history else 0
         return frame_state
 
@@ -173,27 +179,50 @@ class TrafficMonitoringSystem:
 # ============================================================================
 # LUỒNG AI KẾT NỐI VỚI GUI (NHẬN THÊM ROI TỪ GUI)
 # ============================================================================
-def ai_engine_worker(video_source, custom_polygons, custom_restrictions, frame_queue, stats_queue, command_queue, is_running_func):
+def ai_engine_worker(video_source, custom_polygons, custom_restrictions, frame_queue, stats_queue, command_queue, is_running_func, use_optimized=True):
     system = None
     try:
+        m_type = OPTIMIZED_MODEL_TYPE if use_optimized else 'pt'
         system = TrafficMonitoringSystem(
-            video_path=video_source, model_type='pt', use_optimized=True,
-            custom_polygons=custom_polygons, custom_restrictions=custom_restrictions # Truyền ROI động vào đây
+            video_path=video_source, model_type=m_type, use_optimized=use_optimized,
+            custom_polygons=custom_polygons, custom_restrictions=custom_restrictions
         )
     except Exception as e:
         stats_queue.put({'action': 'engine_stopped', 'error': str(e)})
         return
 
+    paused = False
+    total_frames = int(system.cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    is_video_file = total_frames > 0 and not str(video_source).isdigit()
+
     try:
         while system.cap.isOpened() and is_running_func():
-            try:
-                cmd = command_queue.get_nowait()
-                if cmd.get("action") == "set_confidence":
-                    new_val = cmd.get("value")
-                    if hasattr(system, 'detector') and hasattr(system.detector, 'config'):
-                        system.detector.config.confidence_threshold = new_val
-            except queue.Empty:
-                pass
+            # Xử lý mọi lệnh điều khiển thời gian thực từ GUI
+            while not command_queue.empty():
+                try:
+                    cmd = command_queue.get_nowait()
+                    action = cmd.get("action")
+                    val = cmd.get("value")
+                    
+                    if action == "set_confidence" and hasattr(system, 'detector'):
+                        system.detector.model_config.confidence_threshold = float(val)
+                    elif action == "set_violation_time" and hasattr(system, 'analyzer'):
+                        system.analyzer.time_threshold = float(val)
+                    elif action == "set_clahe":
+                        system.use_clahe = bool(val)
+                    elif action == "set_draw_roi" and hasattr(system, 'visualizer'):
+                        system.visualizer.draw_roi = bool(val)
+                    elif action == "set_draw_trails" and hasattr(system, 'visualizer'):
+                        system.visualizer.draw_trails = bool(val)
+                    elif action == "set_pause":
+                        paused = bool(val)
+                except queue.Empty:
+                    break
+
+            # Nếu đang tạm dừng (Pause) -> Ngủ nhẹ 50ms giữ nguyên trạng thái
+            if paused:
+                time.sleep(0.05)
+                continue
 
             ret, frame = system.cap.read()
             if not ret: 
@@ -204,10 +233,25 @@ def ai_engine_worker(video_source, custom_polygons, custom_restrictions, frame_q
             
             process_time = time.time() - frame_start
             current_fps = 1.0 / process_time if process_time > 0 else 0
+            system.fps_history.append(current_fps)
+            
+            # Lưu frame vào file video đầu ra (nếu bật SAVE_OUTPUT_VIDEO)
+            if system.video_writer and frame_state.processed_frame is not None:
+                system.video_writer.write(frame_state.processed_frame)
             
             total_cars = system.counter.get_total() if hasattr(system, 'counter') else 0
+            class_counts = system.counter.get_counts() if hasattr(system, 'counter') else {}
             violations_count = system.analyzer.get_violation_count() if hasattr(system, 'analyzer') else 0
             
+            # Tính toán thanh tiến trình thời gian cho file Video
+            progress_ratio = 0.0
+            progress_text = "LIVE STREAM"
+            if is_video_file and total_frames > 0:
+                progress_ratio = min(1.0, system.frame_count / total_frames)
+                cur_sec = int(system.frame_count / system.video_fps)
+                tot_sec = int(total_frames / system.video_fps)
+                progress_text = f"{cur_sec // 60:02d}:{cur_sec % 60:02d} / {tot_sec // 60:02d}:{tot_sec % 60:02d} ({int(progress_ratio * 100)}%)"
+
             live_viol_data = []
             for viol in frame_state.violations:
                 live_viol_data.append({
@@ -216,7 +260,8 @@ def ai_engine_worker(video_source, custom_polygons, custom_restrictions, frame_q
                     "class": viol.cls_name.upper(),
                     "type": viol.violation_type,
                     "lane": viol.violation_lane,
-                    "conf": f"{viol.conf:.2f}"
+                    "conf": f"{viol.conf:.2f}",
+                    "bbox": viol.bbox
                 })
 
             if not frame_queue.full():
@@ -227,8 +272,12 @@ def ai_engine_worker(video_source, custom_polygons, custom_restrictions, frame_q
                     'action': 'processing',
                     'fps': current_fps,
                     'total_vehicles': total_cars,
+                    'active_vehicles': len(frame_state.vehicles),
+                    'class_counts': class_counts,
                     'violations': violations_count,
-                    'live_viol_data': live_viol_data
+                    'live_viol_data': live_viol_data,
+                    'progress_ratio': progress_ratio,
+                    'progress_text': progress_text
                 })
                 
     except Exception as e:
@@ -240,6 +289,12 @@ def ai_engine_worker(video_source, custom_polygons, custom_restrictions, frame_q
 
 if __name__ == "__main__":
     from ui.dashboard import TrafficDashboard
+    
+    from utils.config import (
+        DEFAULT_VIDEO_SOURCE, BASELINE_MODEL_PATH, OPTIMIZED_MODEL_PATH, OPTIMIZED_MODEL_TYPE, DEVICE,
+        CONFIDENCE_THRESHOLD, IOU_THRESHOLD, LANE_POLYGONS, LANE_RESTRICTIONS,
+        DRAW_ROI_POLYGONS, SAVE_OUTPUT_VIDEO, OUTPUT_VIDEO_PATH, MIN_FPS
+    )
     
     parser = argparse.ArgumentParser()
     parser.add_argument('--cli', action='store_true', help="Chạy chế độ Terminal (Không mở GUI)")

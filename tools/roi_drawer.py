@@ -9,7 +9,8 @@ import tkinter as tk
 from tkinter import ttk
 
 class ROIDrawer:
-    def __init__(self, video_source):
+    # [CẬP NHẬT HÀM __init__]: Nhận thêm existing_polygons và existing_restrictions
+    def __init__(self, video_source, existing_polygons=None, existing_restrictions=None):
         if str(video_source).isdigit():
             self.video_source = int(video_source)
             print(f"🎬 Loading Webcam ID: {self.video_source}")
@@ -32,10 +33,17 @@ class ROIDrawer:
         self.current_polygon = []
         self.all_polygons = {}
         self.all_restrictions = {}
-        self.lane_counter = 1
-        self.mouse_pos = (0, 0)
         
-        # Danh sách các loại xe hệ thống có thể nhận diện
+        # [MỚI]: Nạp sẵn các làn đường đã lưu trước đó (nếu có)
+        if existing_polygons and existing_restrictions:
+            for k, v in existing_polygons.items():
+                self.all_polygons[k] = v.tolist() if isinstance(v, np.ndarray) else list(v)
+            self.all_restrictions = dict(existing_restrictions)
+            self.lane_counter = len(self.all_polygons) + 1
+        else:
+            self.lane_counter = 1
+            
+        self.mouse_pos = (0, 0)
         self.available_classes = ["Bike", "Bus", "Car", "Motorbike", "Truck"]
         
         self.window_name = "ROI Drawer - Draw Lane Boundaries"
@@ -98,18 +106,17 @@ class ROIDrawer:
         overlay = display.copy()
         
         # Tọa độ khung nền đen (x1, y1, x2, y2)
-        cv2.rectangle(overlay, (15, 15), (450, 200), (0, 0, 0), -1)
-        
-        # Kết hợp khung nền với ảnh gốc (Độ mờ 60%)
+        # Trong hàm _draw_frame(self):
+        cv2.rectangle(overlay, (15, 15), (450, 230), (0, 0, 0), -1)
         cv2.addWeighted(overlay, 0.6, display, 0.4, 0, display)
         
-        # Nội dung hướng dẫn (Không dùng dấu tiếng Việt để tránh lỗi font OpenCV)
         guide_text = [
             "--- HUONG DAN VE LAN DUONG (ROI) ---",
             "[*] CHUOT TRAI: Cham de tao diem",
             "[*] CHUOT PHAI: Xoa diem vua tao",
             "[*] PHIM 'N'  : Luu lan & Chon xe",
-            "[*] PHIM 'C'  : Xoa ban ve nhap",
+            "[*] PHIM 'C'  : Xoa net ve nhap",
+            "[*] PHIM 'R'  : Xoa TAT CA lan da luu",
             "[*] PHIM 'Q'  : Hoan tat & Thoat"
         ]
         
@@ -168,9 +175,16 @@ class ROIDrawer:
                         self.lane_counter += 1
                     else:
                         print("❌ Cần ít nhất 3 điểm!")
+                # Trong vòng lặp while True của hàm run(self):
                 elif key in (ord('c'), ord('C')):
                     self.current_polygon.clear()
-                elif key in (ord('q'), ord('Q'), 27): # 27 là phím ESC
+                elif key in (ord('r'), ord('R')): # [MỚI]: Xóa toàn bộ làn cũ để vẽ lại từ LANE_1
+                    self.all_polygons.clear()
+                    self.all_restrictions.clear()
+                    self.current_polygon.clear()
+                    self.lane_counter = 1
+                    print("🗑️ Đã xóa toàn bộ các làn đường để vẽ lại từ đầu.")
+                elif key in (ord('q'), ord('Q'), 27):
                     break
         finally:
             cv2.destroyAllWindows()

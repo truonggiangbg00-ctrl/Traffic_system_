@@ -93,47 +93,50 @@ class DetectorTracker:
         if use_preprocessing:
             frame = self.preprocess_frame(frame, use_clahe=True)
         
-        # Reset danh sách xe, tránh việc tích lũy dữ liệu rác từ frame trước
+        # Reset danh sách xe ở mỗi frame mới
         frame_state.vehicles = []
         
         try:
-            # Inference & Tracking (Gắn cờ persist=True để duy trì ID qua các frame)
+            # Chuẩn hóa tham số device cho Ultralytics (tránh lỗi khi dùng CUDA)
+            infer_device = 0 if self.model_config.device == "cuda" else self.model_config.device
+
             results = self.model.track(
                 frame,
                 persist=True,
-                tracker="botsort.yaml",  # BoT-SORT thường xử lý che khuất (occlusion) tốt hơn DeepSORT
-                verbose=False,           # Tắt log nhiễu ra console ở mỗi frame
-                conf=self.model_config.confidence_threshold,
-                iou=self.model_config.iou_threshold,
-                device=self.model_config.device
+                tracker="botsort.yaml",
+                verbose=False,
+                conf=float(self.model_config.confidence_threshold),
+                iou=float(self.model_config.iou_threshold),
+                device=infer_device
             )
             
             if results and len(results) > 0:
                 result = results[0]
                 
-                # Kiểm tra an toàn: Đôi khi model nhận diện ra object (boxes) nhưng Tracker chưa kịp cấp ID
-                if hasattr(result, 'boxes') and result.boxes is not None and result.boxes.id is not None:
-                    # Chuyển tensor từ GPU (.cpu()) về bộ nhớ RAM (.numpy()) để xử lý logic
+                if hasattr(result, 'boxes') and result.boxes is not None:
                     boxes = result.boxes.xyxy.cpu().numpy()
-                    track_ids = result.boxes.id.cpu().numpy()
                     class_ids = result.boxes.cls.cpu().numpy()
                     confidences = result.boxes.conf.cpu().numpy()
                     class_names = result.names
                     
+                    # [FIX AN TOÀN]: Nếu ở vài frame đầu Tracker chưa kịp cấp ID thì tạo ID tạm thời thay vì bỏ qua toàn bộ xe
+                    if result.boxes.id is not None:
+                        track_ids = result.boxes.id.cpu().numpy()
+                    else:
+                        track_ids = np.arange(1, len(boxes) + 1)
+                    
                     for box, track_id, cls_id, conf in zip(boxes, track_ids, class_ids, confidences):
-                        # Ép kiểu tọa độ về int theo chuẩn của object TrackedVehicle
-                        # Trong file core/detector_tracker.py, đoạn for loop:
                         vehicle = TrackedVehicle(
                             track_id=int(track_id),
                             bbox=tuple(map(int, box)),
                             cls_id=int(cls_id),
-                            cls_name=class_names[int(cls_id)].lower(), # [FIX]: Ép lowercase ngay tại đây
+                            cls_name=class_names[int(cls_id)].lower(),
                             conf=float(conf)
                         )
                         frame_state.vehicles.append(vehicle)
                         
         except Exception as e:
-            self.logger.error(f"❌ Error during detection/tracking at frame {frame_state.frame_id}: {str(e)}")
+            print(f"❌ [DetectorTracker] Lỗi nhận diện tại frame {frame_state.frame_id}: {e}")
         
         return frame_state
     

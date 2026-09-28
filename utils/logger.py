@@ -140,8 +140,10 @@ class ViolationLogger:
             filename = f"violation_vid{vehicle_id}_frm{frame_id}_{violation_type}_{timestamp_str}.jpg"
             filepath = Path(EVIDENCE_DIR) / filename
             
-            # Lưu nguyên cả khung hình (đã được vẽ khung đỏ)
-            cv2.imwrite(str(filepath), full_frame)
+            # [FIX UNICODE WINDOWS]: Dùng imencode + tofile thay cho cv2.imwrite để không lỗi dấu tiếng Việt
+            is_success, im_buf_arr = cv2.imencode(".jpg", full_frame)
+            if is_success:
+                im_buf_arr.tofile(str(filepath))
         
         except Exception as e:
             print(f"❌ Error saving violation image: {e}")
